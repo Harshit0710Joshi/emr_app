@@ -4,7 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Card } from '@components/common/Card';
 import { Button } from '@components/common/Button';
 import { colors, typography, spacing, radius } from '@theme/index';
-import { SyncStatsRepository, DetailedSyncStats, FailedOperation } from '@database/repositories/syncStatsRepository';
+import { SyncStatsRepository, DetailedSyncStats, FailedOperation, MetricsSummary } from '@database/repositories/syncStatsRepository';
 import { SyncEngine } from '@sync/syncEngine';
 
 export const SyncDashboardScreen: React.FC = () => {
@@ -12,14 +12,17 @@ export const SyncDashboardScreen: React.FC = () => {
   const [failedOps, setFailedOps] = useState<FailedOperation[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [metrics, setMetrics] = useState<MetricsSummary | null>(null);
 
   const loadData = useCallback(async () => {
-    const [statsData, failedData] = await Promise.all([
+    const [statsData, failedData, metricsData] = await Promise.all([
       SyncStatsRepository.getDetailedStats(),
       SyncStatsRepository.getFailedOperations(),
+      SyncStatsRepository.getMetricsSummary(),
     ]);
     setStats(statsData);
     setFailedOps(failedData);
+    setMetrics(metricsData);
   }, []);
 
   useFocusEffect(
@@ -65,6 +68,12 @@ export const SyncDashboardScreen: React.FC = () => {
     });
   };
 
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
   if (!stats) {
     return (
       <View style={styles.container}>
@@ -89,6 +98,26 @@ export const SyncDashboardScreen: React.FC = () => {
           style={{ marginTop: spacing.md }}
         />
       </Card>
+
+      {metrics && (
+        <Card style={{ marginBottom: spacing.lg }}>
+          <Text style={styles.sectionTitle}>Replication Metrics</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.sm }}>
+            <View>
+              <Text style={styles.lastSyncText}>{metrics.avgDurationMs}ms</Text>
+              <Text style={{ fontSize: typography.size.xs, color: colors.textTertiary }}>Avg sync time</Text>
+            </View>
+            <View>
+              <Text style={styles.lastSyncText}>{formatBytes(metrics.totalBytesSynced)}</Text>
+              <Text style={{ fontSize: typography.size.xs, color: colors.textTertiary }}>Total data synced</Text>
+            </View>
+            <View>
+              <Text style={styles.lastSyncText}>{metrics.totalOperationsLogged}</Text>
+              <Text style={{ fontSize: typography.size.xs, color: colors.textTertiary }}>Operations logged</Text>
+            </View>
+          </View>
+        </Card>
+      )}
 
       <View style={styles.statsGrid}>
         <StatBox label="Pending" value={stats.pending} color={colors.statusPending} />

@@ -87,22 +87,27 @@ export const SyncQueue = {
   },
 
   async logReplication(
-    operationId: string,
-    entityType: EntityType,
-    entityId: string,
-    operationType: OperationType,
-    direction: 'push' | 'pull',
-    status: 'success' | 'failed' | 'conflict',
-    details?: string
-  ): Promise<void> {
-    const db = await getDatabase();
-    await db.runAsync(
-      `INSERT INTO replication_log (
-        operation_id, entity_type, entity_id, operation_type, direction, status, synced_at, details
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
-      [operationId, entityType, entityId, operationType, direction, status, new Date().toISOString(), details ?? null]
-    );
-  },
+  operationId: string,
+  entityType: EntityType,
+  entityId: string,
+  operationType: OperationType,
+  direction: 'push' | 'pull',
+  status: 'success' | 'failed' | 'conflict',
+  details?: string,
+  durationMs?: number,
+  payloadBytes?: number
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT INTO replication_log (
+      operation_id, entity_type, entity_id, operation_type, direction, status, synced_at, details, duration_ms, payload_bytes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+    [
+      operationId, entityType, entityId, operationType, direction, status,
+      new Date().toISOString(), details ?? null, durationMs ?? null, payloadBytes ?? null,
+    ]
+  );
+},
 
   async getStats(): Promise<SyncStats> {
     const db = await getDatabase();

@@ -3,6 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
 import { colors, typography } from '@theme/index';
+import { RevisionHistoryScreen } from '@screens/RevisionHistoryScreen';
 
 import { PatientListScreen } from '@screens/PatientListScreen';
 import { SyncDashboardScreen } from '@screens/SyncDashboardScreen';
@@ -30,6 +31,11 @@ export const AppNavigator = () => {
           contentStyle: { backgroundColor: colors.background },
         }}
       >
+        <Stack.Screen
+  name="RevisionHistory"
+  component={RevisionHistoryScreen}
+  options={{ title: 'Revision History' }}
+/>
         <Stack.Screen
   name="PeerSync"
   component={PeerSyncScreen}

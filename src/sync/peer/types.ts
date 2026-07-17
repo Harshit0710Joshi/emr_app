@@ -1,13 +1,19 @@
-export interface DiscoveredPeer {
-  name: string;
-  host: string;
-  port: number;
-  deviceId: string;
+export interface PeerOperation {
+  operationId: string;
+  entityType: 'patient' | 'visit';
+  entityId: string;
+  operationType: 'create' | 'update' | 'delete';
+  payload: any;
+  originDeviceId: string;
 }
 
-export interface PeerSyncPayload {
-  deviceId: string;
-  patients: any[];
-  visits: any[];
+export interface PeerPacket {
+  senderDeviceId: string;
   timestamp: string;
+  operations: PeerOperation[];
+}
+
+export interface PeerAck {
+  type: 'ACK';
+  receivedCount: number;
 }

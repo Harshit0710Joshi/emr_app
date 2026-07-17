@@ -8,12 +8,11 @@ export function useNetworkStatus() {
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
-      const online = !!state.isConnected && !!state.isInternetReachable;
+      const online = !!state.isConnected && state.isInternetReachable !== false;
 
       if (wasOffline.current && online) {
         setJustReconnected(true);
-        // Reset the flag shortly after, so it only fires once per reconnect event
-        setTimeout(() => setJustReconnected(false), 100);
+        setTimeout(() => setJustReconnected(false), 500);
       }
 
       wasOffline.current = !online;

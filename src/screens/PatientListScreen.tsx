@@ -11,6 +11,7 @@ import { PatientRepository } from '@database/repositories/patientRepository';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Patient } from '@models/patient';
 import { SyncEngine } from '@sync/syncEngine';
+import { getDatabase } from '@database/db';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PatientList'>;
 
@@ -32,6 +33,9 @@ export const PatientListScreen: React.FC<Props> = ({ navigation }) => {
     } finally {
       setLoading(false);
     }
+    const db = await getDatabase();
+const row = await db.getFirstAsync('SELECT id, first_name, last_name, phone, revision, updated_at, sync_status FROM patients WHERE id = ?;', ['the-patient-id']);
+console.log('Phone A local state:', JSON.stringify(row, null, 2));
   }, []);
 
   // Reload every time this screen comes into focus (e.g. after adding a patient)
@@ -46,6 +50,15 @@ export const PatientListScreen: React.FC<Props> = ({ navigation }) => {
     setSearchQuery(text);
     loadPatients(text);
   };
+  const handleDebugCheck = async () => {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync(
+    'SELECT id, first_name, sync_status, is_deleted, updated_at FROM patients ORDER BY updated_at DESC LIMIT 5;'
+  );
+  console.log('=== PATIENTS TABLE STATE ===');
+  console.log(JSON.stringify(rows, null, 2));
+  Alert.alert('Check console', 'Patient sync_status logged to Metro terminal');
+};
 
   const handleSync = async () => {
     setSyncing(true);
@@ -61,6 +74,8 @@ export const PatientListScreen: React.FC<Props> = ({ navigation }) => {
       setSyncing(false);
     }
   };
+
+
 
   return (
     <View style={styles.container}>
@@ -99,19 +114,15 @@ export const PatientListScreen: React.FC<Props> = ({ navigation }) => {
   onPress={() => navigation.navigate('SyncDashboard')}
   style={{ marginBottom: spacing.md }}
 />
-        <Button
-          label="Sync Now (test)"
-          variant="outline"
-          loading={syncing}
-          onPress={handleSync}
-          style={{ marginBottom: spacing.md }}
-        />
+        
         <Button
   label="Peer Sync"
   variant="outline"
   onPress={() => navigation.navigate('PeerSync')}
   style={{ marginBottom: spacing.md }}
 />
+
+
         <Button
           label="+ Register New Patient"
           onPress={() => navigation.navigate('PatientRegistration')}

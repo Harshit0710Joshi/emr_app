@@ -83,6 +83,12 @@ export const PatientProfileScreen: React.FC<Props> = ({ navigation, route }) => 
         onPress={() => navigation.navigate('VisitHistory', { patientId })}
       />
       <Button
+  label="View Revision History"
+  variant="outline"
+  onPress={() => navigation.navigate('RevisionHistory', { entityType: 'patient', entityId: patientId })}
+  style={{ marginTop: spacing.md }}
+/>
+      <Button
         label="+ Add Visit"
         variant="secondary"
         style={{ marginTop: spacing.md }}

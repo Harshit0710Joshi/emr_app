@@ -2,34 +2,71 @@ import { getDatabase } from '@database/db';
 import { apiClient } from '@network/apiClient';
 import { SyncQueue } from './syncQueue';
 import type { SyncQueueItem } from './types';
+import { RevisionHistoryRepository } from '@database/repositories/revisionHistoryRepository';
 
 const MAX_RETRIES = 5;
+
+/**
+ * After a successful push, the entity itself (patients/visits row) must be
+ * marked 'synced' too — not just the sync_queue entry. Otherwise our conflict
+ * detection (which checks entity.sync_status === 'pending') keeps treating
+ * already-synced records as having local unsynced changes forever.
+ */
+async function markEntitySynced(entityType: 'patient' | 'visit', entityId: string): Promise<void> {
+  const db = await getDatabase();
+  const table = entityType === 'patient' ? 'patients' : 'visits';
+
+  const stillPending = await db.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) as count FROM sync_queue
+     WHERE entity_id = ? AND entity_type = ? AND status IN ('pending', 'syncing', 'failed');`,
+    [entityId, entityType]
+  );
+
+  if (!stillPending || stillPending.count === 0) {
+    await db.runAsync(
+      `UPDATE ${table} SET sync_status = 'synced' WHERE id = ?;`,
+      [entityId]
+    );
+  }
+}
 
 async function pushOperation(item: SyncQueueItem): Promise<void> {
   await SyncQueue.markSyncing(item.operationId);
   const payload = JSON.parse(item.payload);
+  const payloadBytes = item.payload.length;
+  const startTime = Date.now();
 
   try {
     if (item.entityType === 'patient') {
-      if (item.operationType === 'create') await apiClient.post('/patients', payload);
-      else if (item.operationType === 'update') await apiClient.put(`/patients/${item.entityId}`, payload);
-      else if (item.operationType === 'delete') await apiClient.delete(`/patients/${item.entityId}`, payload);
+      if (item.operationType === 'create') await apiClient.post('/patients', payload, item.operationId);
+      else if (item.operationType === 'update') await apiClient.put(`/patients/${item.entityId}`, payload, item.operationId);
+      else if (item.operationType === 'delete') await apiClient.delete(`/patients/${item.entityId}`, payload, item.operationId);
     } else if (item.entityType === 'visit') {
-      if (item.operationType === 'create') await apiClient.post('/visits', payload);
-      else if (item.operationType === 'update') await apiClient.put(`/visits/${item.entityId}`, payload);
-      else if (item.operationType === 'delete') await apiClient.delete(`/visits/${item.entityId}`, payload);
+      if (item.operationType === 'create') await apiClient.post('/visits', payload, item.operationId);
+      else if (item.operationType === 'update') await apiClient.put(`/visits/${item.entityId}`, payload, item.operationId);
+      else if (item.operationType === 'delete') await apiClient.delete(`/visits/${item.entityId}`, payload, item.operationId);
     }
 
+    const durationMs = Date.now() - startTime;
     await SyncQueue.markSynced(item.operationId);
-    await SyncQueue.logReplication(item.operationId, item.entityType, item.entityId, item.operationType, 'push', 'success');
+    await markEntitySynced(item.entityType, item.entityId);
+    await SyncQueue.logReplication(
+      item.operationId, item.entityType, item.entityId, item.operationType, 'push', 'success',
+      undefined, durationMs, payloadBytes
+    );
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
     await SyncQueue.markFailed(item.operationId, err.message ?? String(err));
-    await SyncQueue.logReplication(item.operationId, item.entityType, item.entityId, item.operationType, 'push', 'failed', err.message);
+    await SyncQueue.logReplication(
+      item.operationId, item.entityType, item.entityId, item.operationType, 'push', 'failed',
+      err.message, durationMs, payloadBytes
+    );
     throw err;
   }
 }
 
 async function pushQueue(): Promise<{ succeeded: number; failed: number }> {
+  const db = await getDatabase();
   const pending = await SyncQueue.getPending(50);
   let succeeded = 0;
   let failed = 0;
@@ -39,6 +76,23 @@ async function pushQueue(): Promise<{ succeeded: number; failed: number }> {
       failed++;
       continue;
     }
+
+    // Dependency guard: a visit can't sync before its parent patient exists
+    // server-side. If the parent patient still has unsynced operations queued,
+    // skip this visit for now — it'll be picked up on a later sync pass.
+    if (item.entityType === 'visit') {
+      const payload = JSON.parse(item.payload);
+      const patientId = payload.patientId ?? payload.patient_id;
+      const parentPending = await db.getFirstAsync<{ count: number }>(
+        `SELECT COUNT(*) as count FROM sync_queue
+         WHERE entity_id = ? AND entity_type = 'patient' AND status IN ('pending', 'syncing', 'failed');`,
+        [patientId]
+      );
+      if (parentPending && parentPending.count > 0) {
+        continue;
+      }
+    }
+
     try {
       await pushOperation(item);
       succeeded++;
@@ -61,46 +115,49 @@ function isConflict(localSyncStatus: string, lastSyncedAt: string | null, remote
   return localHasUnsyncedChanges && remoteChangedAfterLastSync;
 }
 
-async function pullPatients(lastSyncedAt: string | null): Promise<{ pulled: number; conflicts: number }> {
+async function pullPatients(lastSyncedAt: string | null): Promise<{ pulled: number; conflicts: number; maxUpdatedAt: string | null }> {
   const db = await getDatabase();
   const since = lastSyncedAt ?? '1970-01-01T00:00:00Z';
   const remotePatients = await apiClient.get<any[]>(`/patients/changes?since=${encodeURIComponent(since)}`);
 
   let conflicts = 0;
+  let maxUpdatedAt: string | null = null;
 
   for (const p of remotePatients) {
+    if (!maxUpdatedAt || new Date(p.updated_at) > new Date(maxUpdatedAt)) {
+      maxUpdatedAt = p.updated_at;
+    }
+
     const local = await db.getFirstAsync<any>(
       'SELECT revision, sync_status, updated_at FROM patients WHERE id = ?;',
       [p.id]
     );
 
     if (!local) {
-      // New record from server — just insert it
       await insertOrReplacePatient(db, p, 'synced');
       continue;
     }
 
     if (isConflict(local.sync_status, lastSyncedAt, p.updated_at)) {
       conflicts++;
-      // Last-Write-Wins: compare timestamps, keep the newer one
       const remoteIsNewer = new Date(p.updated_at) > new Date(local.updated_at);
+      const localFull = await db.getFirstAsync<any>('SELECT * FROM patients WHERE id = ?;', [p.id]);
 
       await SyncQueue.logReplication(
         'conflict-' + p.id, 'patient', p.id, 'update', 'pull', 'conflict',
         `Local vs remote conflict. Remote newer: ${remoteIsNewer}`
       );
+      await RevisionHistoryRepository.record('patient', p.id, p.revision, p, 'conflict_resolution', localFull);
 
       if (remoteIsNewer) {
         await insertOrReplacePatient(db, p, 'synced');
       }
-      // else: keep local version, it'll get pushed on next push cycle since it's still 'pending'
     } else if (p.revision > local.revision || new Date(p.updated_at) > new Date(local.updated_at)) {
-      // No conflict — just a newer remote version, apply it
       await insertOrReplacePatient(db, p, 'synced');
     }
   }
 
-  return { pulled: remotePatients.length, conflicts };
+  return { pulled: remotePatients.length, conflicts, maxUpdatedAt };
 }
 
 async function insertOrReplacePatient(db: any, p: any, syncStatus: string) {
@@ -126,14 +183,19 @@ async function insertOrReplacePatient(db: any, p: any, syncStatus: string) {
   );
 }
 
-async function pullVisits(lastSyncedAt: string | null): Promise<{ pulled: number; conflicts: number }> {
+async function pullVisits(lastSyncedAt: string | null): Promise<{ pulled: number; conflicts: number; maxUpdatedAt: string | null }> {
   const db = await getDatabase();
   const since = lastSyncedAt ?? '1970-01-01T00:00:00Z';
   const remoteVisits = await apiClient.get<any[]>(`/visits/changes?since=${encodeURIComponent(since)}`);
 
   let conflicts = 0;
+  let maxUpdatedAt: string | null = null;
 
   for (const v of remoteVisits) {
+    if (!maxUpdatedAt || new Date(v.updated_at) > new Date(maxUpdatedAt)) {
+      maxUpdatedAt = v.updated_at;
+    }
+
     const local = await db.getFirstAsync<any>(
       'SELECT revision, sync_status, updated_at FROM visits WHERE id = ?;',
       [v.id]
@@ -147,10 +209,14 @@ async function pullVisits(lastSyncedAt: string | null): Promise<{ pulled: number
     if (isConflict(local.sync_status, lastSyncedAt, v.updated_at)) {
       conflicts++;
       const remoteIsNewer = new Date(v.updated_at) > new Date(local.updated_at);
+      const localFull = await db.getFirstAsync<any>('SELECT * FROM visits WHERE id = ?;', [v.id]);
+
       await SyncQueue.logReplication(
         'conflict-' + v.id, 'visit', v.id, 'update', 'pull', 'conflict',
         `Local vs remote conflict. Remote newer: ${remoteIsNewer}`
       );
+      await RevisionHistoryRepository.record('visit', v.id, v.revision, v, 'conflict_resolution', localFull);
+
       if (remoteIsNewer) {
         await insertOrReplaceVisit(db, v, 'synced');
       }
@@ -159,7 +225,7 @@ async function pullVisits(lastSyncedAt: string | null): Promise<{ pulled: number
     }
   }
 
-  return { pulled: remoteVisits.length, conflicts };
+  return { pulled: remoteVisits.length, conflicts, maxUpdatedAt };
 }
 
 async function insertOrReplaceVisit(db: any, v: any, syncStatus: string) {
@@ -186,11 +252,23 @@ export const SyncEngine = {
   async runFullSync() {
     const pushResult = await pushQueue();
 
-    const lastSyncedAt = (await SyncQueue.getStats()).lastSyncedAt;
-    const patientPull = await pullPatients(lastSyncedAt);
-    const visitPull = await pullVisits(lastSyncedAt);
+    const previousCursor = (await SyncQueue.getStats()).lastSyncedAt;
+    const patientPull = await pullPatients(previousCursor);
+    const visitPull = await pullVisits(previousCursor);
 
-    await SyncQueue.setLastSyncedAt(new Date().toISOString());
+    // Advance the cursor to the latest SERVER timestamp actually seen this round —
+    // never to the phone's own local clock. If nothing new came in, keep the old
+    // cursor as-is rather than advancing it blindly, so we never accidentally
+    // skip a window of changes due to client/server clock drift.
+    const candidates = [patientPull.maxUpdatedAt, visitPull.maxUpdatedAt, previousCursor].filter(
+      (v): v is string => v !== null
+    );
+    if (candidates.length > 0) {
+      const newCursor = candidates.reduce((latest, current) =>
+        new Date(current) > new Date(latest) ? current : latest
+      );
+      await SyncQueue.setLastSyncedAt(newCursor);
+    }
 
     return {
       pushResult,

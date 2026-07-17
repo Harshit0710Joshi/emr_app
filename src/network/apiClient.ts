@@ -1,7 +1,4 @@
-// Change this to your machine's LAN IP when testing on a physical device,
-// or your deployed backend URL in production. localhost won't work from
-// a physical device or most emulators except Android Studio's default AVD.
-const API_BASE_URL = 'http://10.109.210.32:4000/api'; // 10.0.2.2 = Android emulator's alias for host machine's localhost
+const API_BASE_URL = 'http://10.186.95.32:4000/api'; // keep your current working IP
 
 class ApiClient {
   private baseUrl: string;
@@ -34,16 +31,28 @@ class ApiClient {
     return this.request<T>(path, { method: 'GET' });
   }
 
-  post<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+  post<T>(path: string, body: unknown, operationId?: string): Promise<T> {
+    return this.request<T>(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: operationId ? { 'X-Operation-Id': operationId } : {},
+    });
   }
 
-  put<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>(path, { method: 'PUT', body: JSON.stringify(body) });
+  put<T>(path: string, body: unknown, operationId?: string): Promise<T> {
+    return this.request<T>(path, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      headers: operationId ? { 'X-Operation-Id': operationId } : {},
+    });
   }
 
-  delete<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>(path, { method: 'DELETE', body: JSON.stringify(body) });
+  delete<T>(path: string, body: unknown, operationId?: string): Promise<T> {
+    return this.request<T>(path, {
+      method: 'DELETE',
+      body: JSON.stringify(body),
+      headers: operationId ? { 'X-Operation-Id': operationId } : {},
+    });
   }
 }
 

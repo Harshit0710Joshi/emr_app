@@ -2,12 +2,15 @@ import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import * as Migration001 from './migrations/001_initial';
 import * as Migration002 from './migrations/002_sync_queue';
+import * as Migration003 from './migrations/003_peer_receipts';
+import * as Migration004 from './migrations/004_revision_history';
+import * as Migration005 from './migrations/005_replication_metrics';
 
 const DB_NAME = 'emr.db';
 
 let dbInstance: SQLiteDatabase | null = null;
 
-const migrations = [Migration001, Migration002];
+const migrations = [Migration001, Migration002, Migration003, Migration004, Migration005];
 
 async function hasMigrationRun(db: SQLiteDatabase, name: string): Promise<boolean> {
   try {

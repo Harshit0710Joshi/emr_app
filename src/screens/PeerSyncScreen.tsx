@@ -4,7 +4,9 @@ import { Card } from '@components/common/Card';
 import { Input } from '@components/common/Input';
 import { Button } from '@components/common/Button';
 import { colors, typography, spacing } from '@theme/index';
-import { PeerSyncEngine } from '@sync/peer/peerSyncEngine';
+import { PassivePeer } from '@sync/peer/PassivePeer';
+import { ActivePeer } from '@sync/peer/ActivePeer';
+import * as Network from 'expo-network';
 
 export const PeerSyncScreen: React.FC = () => {
   const [myIp, setMyIp] = useState<string | null>(null);
@@ -14,17 +16,19 @@ export const PeerSyncScreen: React.FC = () => {
 
   useEffect(() => {
     (async () => {
-      const ip = await PeerSyncEngine.getMyIpAddress();
+      const ip = await Network.getIpAddressAsync();
       setMyIp(ip);
     })();
   }, []);
 
+  const isHotspotHost = myIp === '0.0.0.0' || !myIp;
+
   const toggleListening = () => {
     if (listening) {
-      PeerSyncEngine.stopListening();
+      PassivePeer.stop();
       setListening(false);
     } else {
-      PeerSyncEngine.startListening();
+      PassivePeer.start();
       setListening(true);
     }
   };
@@ -36,8 +40,11 @@ export const PeerSyncScreen: React.FC = () => {
     }
     setSyncing(true);
     try {
-      const result = await PeerSyncEngine.syncWithPeer(peerIp.trim());
-      Alert.alert('Peer sync complete', `Pulled: ${result.pulled} records\nPushed: ${result.pushed} records`);
+      const result = await ActivePeer.connectAndSync(peerIp.trim());
+      Alert.alert(
+        'Peer sync complete',
+        `Pushed: ${result.pushed} operations\nPulled: ${result.pulled} operations\nSkipped (duplicates/own): ${result.conflictsSkipped}`
+      );
     } catch (err: any) {
       Alert.alert('Peer sync failed', err.message ?? String(err));
     } finally {
@@ -48,10 +55,21 @@ export const PeerSyncScreen: React.FC = () => {
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Card style={{ marginBottom: spacing.lg }}>
-        <Text style={styles.sectionTitle}>This Device</Text>
-        <Text style={styles.ipText}>{myIp ?? 'Detecting IP...'}</Text>
+        <Text style={styles.sectionTitle}>This Device (Passive Peer)</Text>
+        <Text style={styles.ipText}>
+          {myIp === null ? 'Detecting IP...' : isHotspotHost ? '192.168.43.1 (hotspot default)' : myIp}
+        </Text>
+        {isHotspotHost && myIp !== null && (
+          <Text style={styles.warningText}>
+            You appear to be hosting the hotspot — your IP can't be auto-detected in
+            this mode. The other device should almost always be able to reach you at
+            192.168.43.1. If that doesn't work, check the connected device's WiFi
+            settings → your hotspot network → "Gateway" address.
+          </Text>
+        )}
         <Text style={styles.helper}>
-          Share this IP with the other device so they can sync with you.
+          Share this IP with the other device. Keep "Start Listening" on — once a
+          peer connects, sync happens automatically in both directions.
         </Text>
         <Button
           label={listening ? 'Stop Listening' : 'Start Listening for Peers'}
@@ -62,19 +80,20 @@ export const PeerSyncScreen: React.FC = () => {
       </Card>
 
       <Card>
-        <Text style={styles.sectionTitle}>Sync With Another Device</Text>
+        <Text style={styles.sectionTitle}>Connect to a Peer (Active Peer)</Text>
         <Input
           label="Peer IP Address"
-          placeholder="e.g. 192.168.1.42"
+          placeholder="e.g. 192.168.43.1"
           value={peerIp}
           onChangeText={setPeerIp}
           keyboardType="numeric"
         />
         <Text style={styles.helper}>
-          Both devices must be on the same WiFi network, and the other device must have "Start Listening" active.
+          Both devices must be on the same WiFi/hotspot network, and the other
+          device must have "Start Listening" active. This works fully offline.
         </Text>
         <Button
-          label="Sync With Peer"
+          label="Connect & Sync"
           onPress={handleSync}
           loading={syncing}
           style={{ marginTop: spacing.md }}
@@ -97,6 +116,12 @@ const styles = StyleSheet.create({
     fontSize: typography.size.xxl,
     fontWeight: typography.weight.bold,
     color: colors.primary,
+  },
+  warningText: {
+    fontSize: typography.size.xs,
+    color: colors.warning,
+    marginTop: spacing.sm,
+    lineHeight: 16,
   },
   helper: {
     fontSize: typography.size.xs,

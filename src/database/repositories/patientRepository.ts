@@ -2,9 +2,10 @@ import { getDatabase } from '../db';
 import { generateId } from '@utils/id';
 import { getDeviceId } from '@utils/device';
 import { SyncQueue } from '@sync/syncQueue';
+import { RevisionHistoryRepository } from './revisionHistoryRepository';
 import type { Patient, PatientInput } from '@models/patient';
+import { AutoSyncTrigger } from '@sync/autoSyncTrigger';
 
-// Maps a raw SQLite row (snake_case) to our Patient type (camelCase)
 function mapRowToPatient(row: any): Patient {
   return {
     id: row.id,
@@ -33,32 +34,27 @@ export const PatientRepository = {
     const deviceId = await getDeviceId();
     const now = new Date().toISOString();
 
-    await db.runAsync(
-      `INSERT INTO patients (
-        id, first_name, last_name, date_of_birth, gender, phone,
-        address, blood_group, emergency_contact_name, emergency_contact_phone,
-        created_at, updated_at, device_id, revision, is_deleted, sync_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'pending');`,
-      [
-        id,
-        input.firstName,
-        input.lastName,
-        input.dateOfBirth,
-        input.gender,
-        input.phone,
-        input.address,
-        input.bloodGroup,
-        input.emergencyContactName,
-        input.emergencyContactPhone,
-        now,
-        now,
-        deviceId,
-      ]
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO patients (
+          id, first_name, last_name, date_of_birth, gender, phone,
+          address, blood_group, emergency_contact_name, emergency_contact_phone,
+          created_at, updated_at, device_id, revision, is_deleted, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'pending');`,
+        [
+          id, input.firstName, input.lastName, input.dateOfBirth, input.gender, input.phone,
+          input.address, input.bloodGroup, input.emergencyContactName, input.emergencyContactPhone,
+          now, now, deviceId,
+        ]
+      );
+    });
 
     const created = await this.getById(id);
     if (!created) throw new Error('Failed to create patient');
+
     await SyncQueue.enqueue('patient', id, 'create', created);
+    await RevisionHistoryRepository.record('patient', id, created.revision, created, 'local_write');
+    AutoSyncTrigger.requestSync();
     return created;
   },
 
@@ -68,6 +64,13 @@ export const PatientRepository = {
       'SELECT * FROM patients WHERE id = ? AND is_deleted = 0;',
       [id]
     );
+    return row ? mapRowToPatient(row) : null;
+  },
+
+  /** Fetches a patient regardless of deleted status — needed for delete's "before" snapshot */
+  async getByIdIncludingDeleted(id: string): Promise<Patient | null> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<any>('SELECT * FROM patients WHERE id = ?;', [id]);
     return row ? mapRowToPatient(row) : null;
   },
 
@@ -100,47 +103,72 @@ export const PatientRepository = {
     const deviceId = await getDeviceId();
     const now = new Date().toISOString();
     const merged = { ...existing, ...input };
+    const newRevision = existing.revision + 1;
 
-    await db.runAsync(
-      `UPDATE patients SET
-        first_name = ?, last_name = ?, date_of_birth = ?, gender = ?, phone = ?,
-        address = ?, blood_group = ?, emergency_contact_name = ?, emergency_contact_phone = ?,
-        updated_at = ?, device_id = ?, revision = revision + 1, sync_status = 'pending'
-      WHERE id = ?;`,
-      [
-        merged.firstName,
-        merged.lastName,
-        merged.dateOfBirth,
-        merged.gender,
-        merged.phone,
-        merged.address,
-        merged.bloodGroup,
-        merged.emergencyContactName,
-        merged.emergencyContactPhone,
-        now,
-        deviceId,
-        id,
-      ]
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `UPDATE patients SET
+          first_name = ?, last_name = ?, date_of_birth = ?, gender = ?, phone = ?,
+          address = ?, blood_group = ?, emergency_contact_name = ?, emergency_contact_phone = ?,
+          updated_at = ?, device_id = ?, revision = ?, sync_status = 'pending'
+        WHERE id = ?;`,
+        [
+          merged.firstName, merged.lastName, merged.dateOfBirth, merged.gender, merged.phone,
+          merged.address, merged.bloodGroup, merged.emergencyContactName, merged.emergencyContactPhone,
+          now, deviceId, newRevision, id,
+        ]
+      );
+    });
 
     const updated = await this.getById(id);
     if (!updated) throw new Error('Failed to update patient');
+
     await SyncQueue.enqueue('patient', id, 'update', updated);
+    await RevisionHistoryRepository.record('patient', id, updated.revision, updated, 'local_write', existing);
+    AutoSyncTrigger.requestSync();
     return updated;
   },
 
   async softDelete(id: string): Promise<void> {
     const db = await getDatabase();
+    const existing = await this.getByIdIncludingDeleted(id);
+    if (!existing) throw new Error('Patient not found');
+
     const deviceId = await getDeviceId();
     const now = new Date().toISOString();
+    const newRevision = existing.revision + 1;
 
-    await db.runAsync(
-      `UPDATE patients SET
-        is_deleted = 1, updated_at = ?, device_id = ?, revision = revision + 1, sync_status = 'pending'
-      WHERE id = ?;`,
-      [now, deviceId, id]
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `UPDATE patients SET
+          is_deleted = 1, updated_at = ?, device_id = ?, revision = ?, sync_status = 'pending'
+        WHERE id = ?;`,
+        [now, deviceId, newRevision, id]
+      );
+    });
+
+    const deletePayload = {
+      id,
+      firstName: existing.firstName,
+      lastName: existing.lastName,
+      dateOfBirth: existing.dateOfBirth,
+      gender: existing.gender,
+      phone: existing.phone,
+      address: existing.address,
+      bloodGroup: existing.bloodGroup,
+      emergencyContactName: existing.emergencyContactName,
+      emergencyContactPhone: existing.emergencyContactPhone,
+      createdAt: existing.createdAt,
+      updatedAt: now,
+      deviceId,
+      revision: newRevision,
+      isDeleted: true,
+    };
+
+    await SyncQueue.enqueue('patient', id, 'delete', deletePayload);
+    await RevisionHistoryRepository.record(
+      'patient', id, newRevision, { ...existing, isDeleted: true }, 'local_write', existing
     );
-    const deleted = await this.getById(id); // will be null since getById filters is_deleted=0 — use raw fetch instead:
-    await SyncQueue.enqueue('patient', id, 'delete', { id, isDeleted: true, updatedAt: new Date().toISOString(), deviceId: await getDeviceId() });
+    AutoSyncTrigger.requestSync();
   },
 };

@@ -19,6 +19,12 @@ export interface FailedOperation {
   lastAttemptAt: string | null;
 }
 
+export interface MetricsSummary {
+  avgDurationMs: number;
+  totalBytesSynced: number;
+  totalOperationsLogged: number;
+}
+
 export const SyncStatsRepository = {
   async getDetailedStats(): Promise<DetailedSyncStats> {
     const db = await getDatabase();
@@ -87,4 +93,23 @@ export const SyncStatsRepository = {
     const db = await getDatabase();
     await db.runAsync(`UPDATE sync_queue SET status = 'pending' WHERE status = 'failed';`);
   },
+
+
+async getMetricsSummary(): Promise<MetricsSummary> {
+  const db = await getDatabase();
+  const result = await db.getFirstAsync<{ avg_duration: number; total_bytes: number; total_ops: number }>(
+    `SELECT
+      AVG(duration_ms) as avg_duration,
+      SUM(payload_bytes) as total_bytes,
+      COUNT(*) as total_ops
+    FROM replication_log
+    WHERE direction = 'push' AND status = 'success';`
+  );
+
+  return {
+    avgDurationMs: Math.round(result?.avg_duration ?? 0),
+    totalBytesSynced: result?.total_bytes ?? 0,
+    totalOperationsLogged: result?.total_ops ?? 0,
+  };
+},
 };

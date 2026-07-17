@@ -15,6 +15,19 @@ function calculateAge(dob: string): number {
   return Math.floor(diff / (1000 * 60 * 60 * 24 * 365.25));
 }
 
+function getStatusColor(syncStatus: Patient['syncStatus']): string {
+  switch (syncStatus) {
+    case 'synced':
+      return colors.statusSynced;
+    case 'pending':
+      return colors.statusPending;
+    case 'conflict':
+      return colors.statusConflict;
+    default:
+      return colors.statusOffline;
+  }
+}
+
 export const PatientListItem: React.FC<Props> = ({ patient, onPress }) => {
   const fullName = `${patient.firstName} ${patient.lastName}`;
   const age = calculateAge(patient.dateOfBirth);
@@ -28,7 +41,7 @@ export const PatientListItem: React.FC<Props> = ({ patient, onPress }) => {
           {age} yrs · {patient.gender} · {patient.phone}
         </Text>
       </View>
-      {patient.syncStatus === 'pending' && <View style={styles.pendingDot} />}
+      <View style={[styles.statusDot, { backgroundColor: getStatusColor(patient.syncStatus) }]} />
     </TouchableOpacity>
   );
 };
@@ -58,10 +71,9 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginTop: 2,
   },
-  pendingDot: {
+  statusDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.statusPending,
   },
 });

@@ -6,4 +6,5 @@ export type RootStackParamList = {
   AddEditVisit: { patientId: string; visitId?: string };
   PeerSync: undefined;
   SyncDashboard: undefined;
+  RevisionHistory: { entityType: 'patient' | 'visit'; entityId: string };
 };

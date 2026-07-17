@@ -1,1 +1,1 @@
-declare module 'react-native-http-bridge-refurbished';
+
